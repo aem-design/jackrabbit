@@ -1,0 +1,101 @@
+#  <!--
+#    Licensed to the Apache Software Foundation (ASF) under one or more
+#    contributor license agreements.  See the NOTICE file distributed with
+#    this work for additional information regarding copyright ownership.
+#    The ASF licenses this file to You under the Apache License, Version 2.0
+#    (the "License"); you may not use this file except in compliance with
+#    the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+#    -->
+name: ci
+
+on: [push]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_EMAIL: ${{ secrets.GITHUB_EMAIL }}
+      GITHUB_USERNAME: ${{ secrets.GITHUB_USERNAME }}
+      GPG_SECRET_KEYS: ${{ secrets.GPG_SECRET_KEYS }}
+      GPG_OWNERTRUST: ${{ secrets.GPG_OWNERTRUST }}
+      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+      GPG_EXECUTABLE: gpg
+      GPG_PRESET_EXECUTABLE: /usr/lib/gnupg/gpg-preset-passphrase
+      GPG_PUBID: "50A036956AAC64C13EF47B10D1E96A30ECFC7DFF"
+      GPG_PUBID_KEYGRIP: "020E615868703482DC2CD110B98D2702B6ABF89C"
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: true
+          lfs: true
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          
+      - uses: actions/setup-java@v1
+        with:
+          java-version: '1.8'
+      - name: get release notes
+        run: |
+          source <(curl -sL https://github.com/aem-design/aemdesign-docker/releases/latest/download/github_get_version.sh)
+          echo "===START==="
+          echo $GIT_RELEASE_NOTES
+          echo "====END===="
+          echo CURRENT_VERSION=$CURRENT_VERSION
+      - name: add upstream remote to source project and get latest updates
+        run: |
+          git checkout master
+          git fetch --all
+          git pull --all
+          git remote add uptream https://github.com/apache/jackrabbit.git
+          git checkout trunk
+          git pull uptream trunk
+      - name: merge trunk into master
+        run: |
+          git config --global user.email "${GITHUB_EMAIL}"
+          git config --global user.name "${GITHUB_USERNAME}"
+          git checkout master
+          git merge trunk
+      # - name: merge any of our new branches into master
+      #   run: |
+      #     git branch
+      #     git status
+      #     git checkout feature/enable-insecure-https-host
+      #     git checkout master
+      #     git merge feature/enable-insecure-https-host
+      - name: setup gpg
+        run: |
+          source <(curl -sL https://github.com/aem-design/aemdesign-docker/releases/latest/download/setup-gpg.sh)
+      - name: build and prepare maven artifacts
+        run: |
+          cat pom.xml
+          cat jackrabbit-parent/pom.xml
+          export MAVEN_OPTS="-Xmx2024M -Xss128M -XX:MetaspaceSize=512M -XX:MaxMetaspaceSize=2024M -XX:+CMSClassUnloadingEnabled"
+          mvn clean package install -B -Dmaven.repo.local=~/.m2/repository
+          echo ::set-env name=GITHUB_TAG::$(mvn help:evaluate -q -DforceStdout -Dexpression=project.version)
+#          mvn -DpushChanges=false -DreleasePushChanges=false -DreleaseArguments="-Ppedantic -DpushChanges=false -DreleasePushChanges=false" release:prepare  -B
+#          mvn deploy -P release -DskipTests=true -Dmaven.javadoc.skip=true -Dmaven.source.skip=true -DaltDeploymentRepository=github::default::https://maven.pkg.github.com/$GITHUB_REPOSITORY --settings settings.xml -B
+
+      # deploy files as release artifacts
+      - uses: meeDamian/github-release@1.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ env.GITHUB_TAG }}
+          name: ${{ env.GITHUB_TAG }}
+          body: ${{ env.GIT_RELEASE_NOTES }}
+          allow_override: true
+          gzip: false
+          files: >
+            ~/.m2/repository/org/apache/jackrabbit/jackrabbit*/**/*.pom
+            ~/.m2/repository/org/apache/jackrabbit/jackrabbit*/**/*.jar
+#            **/target/*.asc
+#            **/target/*.pom
